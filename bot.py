@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import logging
 import os
 from io import BytesIO
@@ -7,25 +6,10 @@ from io import BytesIO
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
-from openai import OpenAI
+from PIL import Image, ImageFilter, ImageOps
 
-IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1-mini")
-IMAGE_SIZE = os.environ.get("OPENAI_IMAGE_SIZE", "1024x1024")
-
-COLORING_PROMPT = """
-Convert the uploaded photo into a clean black-and-white printable coloring book page for children.
-
-Strict requirements:
-- use only clear black outlines on a pure white background
-- no colors
-- no grayscale fills
-- no shadows
-- no realistic photo texture
-- no text, no watermark, no logo
-- keep the main subject recognizable
-- simplify small details into large coloring areas
-- make it look like a professional children's coloring page ready for printing
-""".strip()
+MAX_IMAGE_SIDE = int(os.environ.get("MAX_IMAGE_SIDE", "1400"))
+EDGE_THRESHOLD = int(os.environ.get("EDGE_THRESHOLD", "32"))
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -46,31 +30,36 @@ def get_telegram_token() -> str:
     return token
 
 
-def get_openai_client() -> OpenAI:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY NOT FOUND. Add OPENAI_API_KEY to Bothost variables.")
-    return OpenAI(api_key=api_key)
+def resize_image(image: Image.Image) -> Image.Image:
+    image = image.convert("RGB")
+    image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+    return image
 
 
 def generate_coloring_page(image_bytes: bytes) -> bytes:
-    client = get_openai_client()
+    """Free local photo-to-coloring conversion. No OpenAI calls, no paid API usage."""
+    image = Image.open(BytesIO(image_bytes))
+    image = resize_image(image)
 
-    source_image = BytesIO(image_bytes)
-    source_image.name = "source.png"
+    gray = ImageOps.grayscale(image)
+    smooth = gray.filter(ImageFilter.MedianFilter(size=3))
+    smooth = smooth.filter(ImageFilter.SMOOTH_MORE)
 
-    result = client.images.edit(
-        model=IMAGE_MODEL,
-        image=source_image,
-        prompt=COLORING_PROMPT,
-        size=IMAGE_SIZE,
-        n=1,
-    )
+    edges = smooth.filter(ImageFilter.FIND_EDGES)
+    edges = ImageOps.autocontrast(edges)
 
-    if not result.data or not result.data[0].b64_json:
-        raise RuntimeError("OpenAI did not return image data")
+    # Convert edge map into black outlines on a white background.
+    line_art = edges.point(lambda pixel: 0 if pixel > EDGE_THRESHOLD else 255, mode="1")
+    line_art = line_art.convert("L")
 
-    return base64.b64decode(result.data[0].b64_json)
+    # Make outlines a little thicker and cleaner for children's coloring.
+    inverted = ImageOps.invert(line_art)
+    inverted = inverted.filter(ImageFilter.MaxFilter(size=3))
+    line_art = ImageOps.invert(inverted)
+
+    output = BytesIO()
+    line_art.save(output, format="PNG", optimize=True)
+    return output.getvalue()
 
 
 async def run_bot() -> None:
@@ -82,18 +71,18 @@ async def run_bot() -> None:
     @dp.message(CommandStart())
     async def start(message: Message) -> None:
         await message.answer(
-            "Привет! Я делаю раскраски из фотографий.\n\n"
+            "Привет! Я делаю бесплатные раскраски из фотографий.\n\n"
             "Нажмите «Создать раскраску» и отправьте фото.",
             reply_markup=main_menu(),
         )
 
     @dp.message(F.text == "Создать раскраску")
     async def create(message: Message) -> None:
-        await message.answer("Пришлите фото JPEG, PNG или WEBP. Я превращу его в раскраску.")
+        await message.answer("Пришлите фото. Я бесплатно превращу его в контурную раскраску.")
 
     @dp.message(F.photo)
     async def handle_photo(message: Message) -> None:
-        status_message = await message.answer("🎨 Создаю раскраску через GPT Image Mini... Это может занять до минуты.")
+        status_message = await message.answer("🖍️ Делаю раскраску локально. Это бесплатно и обычно занимает пару секунд...")
 
         try:
             photo = message.photo[-1]
@@ -106,16 +95,16 @@ async def run_bot() -> None:
 
             await message.answer_photo(
                 output,
-                caption="Готово! Вот ваша раскраска 🖍️",
+                caption="Готово! Вот бесплатная раскраска 🖍️",
                 reply_markup=main_menu(),
             )
             await status_message.delete()
         except Exception as exc:
-            logging.exception("Failed to generate coloring page")
+            logging.exception("Failed to generate local coloring page")
             await status_message.edit_text(
                 "Не получилось создать раскраску.\n\n"
                 f"Ошибка: {exc}\n\n"
-                "Проверьте OPENAI_API_KEY, баланс OpenAI и доступность модели gpt-image-1-mini."
+                "Попробуйте отправить другое фото с более чётким объектом и хорошим светом."
             )
 
     @dp.message(F.document)
@@ -124,11 +113,11 @@ async def run_bot() -> None:
 
     @dp.message(F.text == "Мои работы")
     async def works(message: Message) -> None:
-        await message.answer("История работ появится позже. Сейчас тестируем генерацию раскрасок.")
+        await message.answer("История работ появится позже. Сейчас работает бесплатная генерация раскрасок.")
 
     @dp.message(F.text == "Купить Premium")
     async def premium(message: Message) -> None:
-        await message.answer("Premium добавим после теста генерации. Сейчас работает базовая раскраска.")
+        await message.answer("Premium добавим позже: красивые AI-раскраски, PDF и несколько вариантов.")
 
     @dp.message(F.text == "Поддержка")
     async def support(message: Message) -> None:
@@ -139,7 +128,7 @@ async def run_bot() -> None:
         await message.answer("Нажмите «Создать раскраску» и отправьте фото.", reply_markup=main_menu())
 
     me = await bot.get_me()
-    logging.info("Bot started @%s with image model %s", me.username, IMAGE_MODEL)
+    logging.info("Bot started @%s in free local coloring mode", me.username)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
