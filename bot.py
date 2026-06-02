@@ -11,7 +11,6 @@ from openai import OpenAI
 
 IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1-mini")
 IMAGE_SIZE = os.environ.get("OPENAI_IMAGE_SIZE", "1024x1024")
-IMAGE_QUALITY = os.environ.get("OPENAI_IMAGE_QUALITY", "low")
 
 COLORING_PROMPT = """
 Convert the uploaded photo into a clean black-and-white printable coloring book page for children.
@@ -65,7 +64,6 @@ def generate_coloring_page(image_bytes: bytes) -> bytes:
         image=source_image,
         prompt=COLORING_PROMPT,
         size=IMAGE_SIZE,
-        quality=IMAGE_QUALITY,
         n=1,
     )
 
@@ -117,7 +115,7 @@ async def run_bot() -> None:
             await status_message.edit_text(
                 "Не получилось создать раскраску.\n\n"
                 f"Ошибка: {exc}\n\n"
-                "Проверьте, что в Bothost добавлен OPENAI_API_KEY и на балансе OpenAI есть деньги."
+                "Проверьте OPENAI_API_KEY, баланс OpenAI и доступность модели gpt-image-1-mini."
             )
 
     @dp.message(F.document)
