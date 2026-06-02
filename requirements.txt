@@ -1,2 +1,4 @@
 aiogram==3.17.0
 Pillow==11.1.0
+numpy==2.2.1
+opencv-python-headless==4.10.0.84
